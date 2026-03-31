@@ -5,14 +5,54 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import os
 from pathlib import Path
+import secrets
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+security = HTTPBasic()
+
+# Simple in-memory user store for demo. In production, use a real hashed DB.
+users_db = {
+    "michael@mergington.edu": "michael123",
+    "emma@mergington.edu": "emma123",
+    "admin@mergington.edu": "admin123"
+}
+
+roles_db = {
+    "michael@mergington.edu": "student",
+    "emma@mergington.edu": "student",
+    "admin@mergington.edu": "admin"
+}
+
+def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
+    username = credentials.username
+    password = credentials.password
+    expected_password = users_db.get(username)
+    if not expected_password or not secrets.compare_digest(password, expected_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Basic"}
+        )
+    return {
+        "username": username,
+        "role": roles_db.get(username, "student")
+    }
+
+@app.get("/auth/me")
+def read_current_user(current_user: dict = Depends(get_current_user)):
+    return {"user": current_user}
+
+@app.post("/auth/login")
+def login(current_user: dict = Depends(get_current_user)):
+    return {"message": "Login successful", "user": current_user}
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -84,13 +124,16 @@ def root():
 
 
 @app.get("/activities")
-def get_activities():
+def get_activities(current_user: dict = Depends(get_current_user)):
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(activity_name: str, email: str, current_user: dict = Depends(get_current_user)):
     """Sign up a student for an activity"""
+    if current_user["role"] != "admin" and current_user["username"] != email:
+        raise HTTPException(status_code=403, detail="Not authorized to signup this user")
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +154,11 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(activity_name: str, email: str, current_user: dict = Depends(get_current_user)):
     """Unregister a student from an activity"""
+    if current_user["role"] != "admin" and current_user["username"] != email:
+        raise HTTPException(status_code=403, detail="Not authorized to unregister this user")
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
